@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Imágenes a PDF</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+  <main class="app">
+    <header class="head">
+      <h1>Imágenes a PDF</h1>
+      <p>Elige una carpeta, ordena las imágenes y crea el PDF. Todo se procesa en tu navegador.</p>
+    </header>
+
+    <section id="drop" class="drop">
+      <p>Arrastra aquí imágenes o una carpeta</p>
+      <div class="drop-actions">
+        <button type="button" id="btnFolder" class="btn primary">Elegir carpeta</button>
+        <button type="button" id="btnFiles" class="btn">Elegir imágenes</button>
+      </div>
+      <input type="file" id="inFolder" webkitdirectory directory multiple hidden>
+      <input type="file" id="inFiles" accept="image/*" multiple hidden>
+    </section>
+
+    <section id="workspace" class="workspace" hidden>
+      <div class="toolbar">
+        <strong id="count">0 imágenes</strong>
+        <div class="tools">
+          <button type="button" class="btn small" id="sortName">Ordenar por nombre</button>
+          <button type="button" class="btn small" id="sortDate">Ordenar por fecha</button>
+          <button type="button" class="btn small" id="reverse">Invertir orden</button>
+          <button type="button" class="btn small danger" id="clear">Vaciar lista</button>
+        </div>
+      </div>
+
+      <ol id="list" class="list"></ol>
+
+      <div class="options">
+        <label>Tamaño de página
+          <select id="pageSize">
+            <option value="a4">A4</option>
+            <option value="letter">Carta</option>
+            <option value="fit">Ajustar a cada imagen</option>
+          </select>
+        </label>
+        <label>Orientación
+          <select id="orientation">
+            <option value="auto">Automática</option>
+            <option value="p">Vertical</option>
+            <option value="l">Horizontal</option>
+          </select>
+        </label>
+        <label>Margen (mm)
+          <input type="number" id="margin" value="0" min="0" max="50">
+        </label>
+        <label>Calidad JPG
+          <input type="range" id="quality" min="0.3" max="1" step="0.05" value="0.9">
+        </label>
+        <label>Nombre del archivo
+          <input type="text" id="fileName" value="imagenes">
+        </label>
+      </div>
+
+      <div class="create">
+        <button type="button" id="btnCreate" class="btn primary big">Crear PDF</button>
+        <span id="status" role="status"></span>
+      </div>
+    </section>
+  </main>
+
+  <script src="js/lib/jspdf.umd.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
