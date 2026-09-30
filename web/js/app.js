@@ -1,7 +1,6 @@
 (() => {
   "use strict";
 
-  const { jsPDF } = window.jspdf;
   const $ = (id) => document.getElementById(id);
 
   const els = {
@@ -10,7 +9,7 @@
     workspace: $("workspace"), list: $("list"), count: $("count"),
     sortName: $("sortName"), sortDate: $("sortDate"), reverse: $("reverse"), clear: $("clear"),
     pageSize: $("pageSize"), orientation: $("orientation"), margin: $("margin"),
-    quality: $("quality"), fileName: $("fileName"),
+    quality: $("quality"), maxPx: $("maxPx"), fileName: $("fileName"),
     btnCreate: $("btnCreate"), status: $("status"),
   };
 
@@ -245,19 +244,78 @@
     });
   }
 
-  /* Pasa cada imagen por un canvas: soporta PNG/WebP/GIF/etc. y rellena transparencias de blanco */
-  function toJpeg(img, quality) {
+  /* Reescala (opcional), rellena transparencias de blanco y devuelve un JPEG como Blob */
+  async function toJpegBlob(img, quality, maxPx) {
+    const w0 = img.naturalWidth, h0 = img.naturalHeight;
+    const k = maxPx > 0 ? Math.min(1, maxPx / Math.max(w0, h0)) : 1;
+    const w = Math.max(1, Math.round(w0 * k)), h = Math.max(1, Math.round(h0 * k));
     const canvas = document.createElement("canvas");
-    canvas.width = img.naturalWidth;
-    canvas.height = img.naturalHeight;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext("2d");
     ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(img, 0, 0);
-    return canvas.toDataURL("image/jpeg", quality);
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+    canvas.width = canvas.height = 0; // libera memoria
+    if (!blob) throw new Error("La imagen es demasiado grande para procesarla");
+    return { blob, w, h };
   }
 
-  const PAGES = { a4: [210, 297], letter: [215.9, 279.4] };
+  /* Escritor mínimo de PDF: las imágenes JPEG se incrustan tal cual y el archivo
+     se monta con un Blob (sin límite de longitud de cadena). */
+  function buildPdf(pages) {
+    const enc = new TextEncoder();
+    const parts = [];
+    const offsets = [];
+    let offset = 0;
+    const put = (x) => {
+      if (typeof x === "string") x = enc.encode(x);
+      parts.push(x);
+      offset += x.size !== undefined ? x.size : x.length;
+    };
+    const num = (n) => n.toFixed(2);
+
+    put(new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xe2, 0xe3, 0xcf, 0xd3, 0x0a]));
+
+    const kids = [];
+    pages.forEach((p, i) => {
+      const imgN = 3 + i * 3, conN = imgN + 1, pageN = imgN + 2;
+      kids.push(`${pageN} 0 R`);
+
+      offsets[imgN] = offset;
+      put(`${imgN} 0 obj\n<< /Type /XObject /Subtype /Image /Width ${p.pxW} /Height ${p.pxH} ` +
+          `/ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${p.blob.size} >>\nstream\n`);
+      put(p.blob);
+      put("\nendstream\nendobj\n");
+
+      const content = `q ${num(p.dw)} 0 0 ${num(p.dh)} ${num(p.x)} ${num(p.y)} cm /Im0 Do Q`;
+      offsets[conN] = offset;
+      put(`${conN} 0 obj\n<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+
+      offsets[pageN] = offset;
+      put(`${pageN} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${num(p.pw)} ${num(p.ph)}] ` +
+          `/Resources << /XObject << /Im0 ${imgN} 0 R >> >> /Contents ${conN} 0 R >>\nendobj\n`);
+    });
+
+    offsets[1] = offset;
+    put("1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+    offsets[2] = offset;
+    put(`2 0 obj\n<< /Type /Pages /Kids [${kids.join(" ")}] /Count ${pages.length} >>\nendobj\n`);
+
+    const total = 3 + pages.length * 3;
+    const xref = offset;
+    let table = `xref\n0 ${total}\n0000000000 65535 f \n`;
+    for (let n = 1; n < total; n++) table += String(offsets[n]).padStart(10, "0") + " 00000 n \n";
+    put(table);
+    put(`trailer\n<< /Size ${total} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF`);
+
+    return new Blob(parts, { type: "application/pdf" });
+  }
+
+  const PAGES_MM = { a4: [210, 297], letter: [215.9, 279.4] };
+  const MM_TO_PT = 72 / 25.4;
+  const PX_TO_PT = 0.75; // 96 dpi -> 72 pt
 
   async function createPdf() {
     if (!items.length) return;
@@ -265,43 +323,46 @@
 
     const mode = els.pageSize.value;
     const orient = els.orientation.value;
-    const margin = Math.max(0, Number(els.margin.value) || 0);
+    const margin = Math.max(0, Number(els.margin.value) || 0) * MM_TO_PT;
     const quality = Number(els.quality.value);
-    const PX_TO_MM = 25.4 / 96;
+    const maxPx = Number(els.maxPx.value);
 
-    let doc = null;
     try {
+      const pages = [];
       for (let i = 0; i < items.length; i++) {
         setStatus(`Procesando ${i + 1} de ${items.length}…`);
         const img = await loadImage(items[i].url);
-        const w = img.naturalWidth, h = img.naturalHeight;
-        const data = toJpeg(img, quality);
+        const origW = img.naturalWidth, origH = img.naturalHeight;
+        const { blob, w, h } = await toJpegBlob(img, quality, maxPx);
 
-        let pw, ph, o;
+        let pw, ph;
         if (mode === "fit") {
-          pw = w * PX_TO_MM + margin * 2;
-          ph = h * PX_TO_MM + margin * 2;
-          o = pw > ph ? "l" : "p";
+          pw = origW * PX_TO_PT + margin * 2;
+          ph = origH * PX_TO_PT + margin * 2;
         } else {
-          o = orient === "auto" ? (w > h ? "l" : "p") : orient;
-          const [a, b] = PAGES[mode];
+          const o = orient === "auto" ? (origW > origH ? "l" : "p") : orient;
+          const [a, b] = PAGES_MM[mode].map((v) => v * MM_TO_PT);
           [pw, ph] = o === "l" ? [b, a] : [a, b];
         }
 
-        if (!doc) doc = new jsPDF({ orientation: o, unit: "mm", format: [pw, ph], compress: true });
-        else doc.addPage([pw, ph], o);
-
-        const boxW = pw - margin * 2, boxH = ph - margin * 2;
-        const scale = Math.min(boxW / w, boxH / h);
-        const dw = w * scale, dh = h * scale;
-        doc.addImage(data, "JPEG", (pw - dw) / 2, (ph - dh) / 2, dw, dh, undefined, "FAST");
+        const scale = Math.min((pw - margin * 2) / origW, (ph - margin * 2) / origH);
+        const dw = origW * scale, dh = origH * scale;
+        pages.push({ blob, pxW: w, pxH: h, pw, ph, dw, dh, x: (pw - dw) / 2, y: (ph - dh) / 2 });
 
         await new Promise((r) => setTimeout(r)); // deja respirar a la interfaz
       }
 
+      setStatus("Generando PDF…");
+      const pdf = buildPdf(pages);
       const name = (els.fileName.value.trim() || "imagenes").replace(/[\\/:*?"<>|]/g, "_");
-      doc.save(name + ".pdf");
-      setStatus(`PDF creado con ${items.length} página${items.length === 1 ? "" : "s"}.`);
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(pdf);
+      a.download = name + ".pdf";
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      setStatus(`PDF creado con ${items.length} página${items.length === 1 ? "" : "s"} (${formatSize(pdf.size)}).`);
     } catch (err) {
       console.error(err);
       setStatus("Error al crear el PDF: " + err.message, true);
